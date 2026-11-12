@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Tap Race</title>
+    <!-- We load PeerJS from their official CDN -->
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background-color: #1e1e2f; color: white; margin: 0; padding: 20px; }
+        h1 { color: #ff4757; }
+        input, button { padding: 15px; margin: 10px; font-size: 18px; border-radius: 8px; border: none; }
+        button { background-color: #2ed573; color: white; cursor: pointer; font-weight: bold; }
+        button:active { transform: scale(0.95); }
+        .screen { display: none; }
+        #setup-screen { display: block; } /* Show setup first */
+        
+        /* Host Track Styles */
+        .player-lane { text-align: left; margin: 20px 0; }
+        .track-bg { width: 100%; background-color: #2f3542; height: 40px; border-radius: 20px; overflow: hidden; border: 2px solid #57606f; }
+        .track-progress { width: 0%; background-color: #ff4757; height: 100%; transition: width 0.1s; }
+        
+        /* Giant Tap Button for Phones */
+        #tap-btn { background-color: #ff4757; width: 90%; height: 300px; font-size: 50px; display: none; border-radius: 20px; box-shadow: 0 10px 20px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+    <h1>🚀 Tap Race</h1>
+
+    <!-- 1. SETUP SCREEN -->
+    <div id="setup-screen" class="screen">
+        <button onclick="createGame()">📺 Create Game (Host Screen)</button>
+        <hr style="border-color:#57606f; margin:30px 0;">
+        <h3>Join a Game</h3>
+        <input type="text" id="room-id" placeholder="Enter Room ID" style="text-transform: uppercase;" maxlength="4"><br>
+        <input type="text" id="player-name" placeholder="Your Name"><br>
+        <button onclick="joinGame()">📱 Join Game</button>
+        <p id="join-status"></p>
+    </div>
+
+    <!-- 2. HOST SCREEN (The Scoreboard) -->
+    <div id="host-screen" class="screen">
+        <h2>Room ID: <span id="display-room-id" style="color: #2ed573; font-size: 40px;"></span></h2>
+        <p>Tell players to enter this code on their phones!</p>
+        <button onclick="startGame()" style="font-size: 24px; padding: 20px 40px;">🏁 Start Race!</button>
+        <div id="racetrack"></div>
+    </div>
+
+    <!-- 3. PLAYER SCREEN (The Phone Controller) -->
+    <div id="player-screen" class="screen">
+        <h2 id="player-status">Waiting for host to start...</h2>
+        <button id="tap-btn" onclick="sendTap()">TAP!</button>
+    </div>
+
+    <script>
+        let peer = null;
+        let conn = null; // For players
+        let hostConns = {}; // For the host to store player connections
+        let scores = {};
+
+        // Generate a simple 4-letter room code
+        function generateId() {
+            return Math.random().toString(36).substring(2, 6).toUpperCase();
+        }
+
+        // --- HOST LOGIC ---
+        function createGame() {
+            const roomId = generateId();
+            peer = new Peer(roomId); // Force PeerJS to use our 4-letter ID
+
+            peer.on('open', (id) => {
+                document.getElementById('setup-screen').style.display = 'none';
+                document.getElementById('host-screen').style.display = 'block';
+                document.getElementById('display-room-id').innerText = id;
+            });
+
+            // When a player connects to the host
+            peer.on('connection', (c) => {
+                c.on('data', (data) => {
+                    if (data.type === 'join') {
+                        hostConns[c.peer] = { conn: c, name: data.name };
+                        scores[c.peer] = 0;
+                        updateTrack(); // Draw the new player on the screen
+                    } else if (data.type === 'tap') {
+                        scores[c.peer] += 2; // Each tap is 2% progress
+                        updateTrack();
+                        checkWinner();
+                    }
+                });
+            });
+        }
+
+        function startGame() {
+            // Tell all connected phones to show the TAP button
+            for (let id in hostConns) {
+                hostConns[id].conn.send({ type: 'start' });
+            }
+        }
+
+        function updateTrack() {
+            const track = document.getElementById('racetrack');
+            track.innerHTML = '';
+            const colors = ['#ff4757', '#1e90ff', '#2ed573', '#ffa502', '#ff69b4'];
+            let colorIndex = 0;
+
+            for (let id in scores) {
+                const name = hostConns[id].name;
+                const score = scores[id];
+                const color = colors[colorIndex % colors.length];
+                
+                track.innerHTML += `
+                    <div class="player-lane">
+                        <strong style="font-size:20px;">${name}</strong>
+                        <div class="track-bg">
+                            <div class="track-progress" style="width: ${score}%; background-color: ${color};"></div>
+                        </div>
+                    </div>`;
+                colorIndex++;
+            }
+        }
+
+        function checkWinner() {
+            for (let id in scores) {
+                if (scores[id] >= 100) {
+                    const winner = hostConns[id].name;
+                    alert("🏆 " + winner + " WINS!");
+                    
+                    // Tell all phones the game is over
+                    for (let c in hostConns) {
+                        hostConns[c].conn.send({ type: 'end', winner: winner });
+                    }
+                    // Reset scores for next round
+                    for (let i in scores) scores[i] = 0; 
+                    updateTrack();
+                }
+            }
+        }
+
+        // --- PLAYER LOGIC ---
+        function joinGame() {
+            const roomId = document.getElementById('room-id').value.toUpperCase();
+            const name = document.getElementById('player-name').value || "Player";
+            document.getElementById('join-status').innerText = "Connecting...";
+
+            peer = new Peer(); // Let PeerJS assign a random ID to the player
+            
+            peer.on('open', (id) => {
+                conn = peer.connect(roomId); // Connect to the Host's 4-letter ID
+                
+                conn.on('open', () => {
+                    // Successfully connected
+                    document.getElementById('setup-screen').style.display = 'none';
+                    document.getElementById('player-screen').style.display = 'block';
+                    conn.send({ type: 'join', name: name }); // Tell host our name
+                });
+
+                // Listen for messages from the Host
+                conn.on('data', (data) => {
+                    if (data.type === 'start') {
+                        document.getElementById('player-status').innerText = "GO GO GO!";
+                        document.getElementById('tap-btn').style.display = 'block';
+                    } else if (data.type === 'end') {
+                        document.getElementById('player-status').innerText = "Game Over! " + data.winner + " won!";
+                        document.getElementById('tap-btn').style.display = 'none';
+                    }
+                });
+            });
+        }
+
+        function sendTap() {
+            if (conn && conn.open) {
+                conn.send({ type: 'tap' }); // Send tap to host
+            }
+        }
+    </script>
+</body>
+</html>
